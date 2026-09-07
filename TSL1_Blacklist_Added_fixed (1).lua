@@ -949,7 +949,6 @@ local SpyConnection = nil
 local AlertTokens = {}
 
 -- WindUI Keybind callbacks may provide either Enum.KeyCode or a string.
--- Normalize both forms so the keyboard handler always compares like-for-like.
 local function NormalizeKeybind(key)
     if typeof(key) == "EnumItem" and key.EnumType == Enum.KeyCode then
         return key
@@ -1120,40 +1119,11 @@ local function GetBlacklistValues()
 end
 
 local BlacklistDropdown
-local BlacklistPlayerPicker
-
-local function GetPlayerPickerValues()
-    local values = {}
-
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= Player then
-            table.insert(values, player.Name)
-        end
-    end
-
-    if #values == 0 then
-        table.insert(values, "— No other players in server —")
-    end
-
-    table.sort(values, function(a, b)
-        return string.lower(a) < string.lower(b)
-    end)
-
-    return values
-end
 
 local function RefreshBlacklistDropdown()
     if BlacklistDropdown then
         pcall(function()
             BlacklistDropdown:Refresh(GetBlacklistValues())
-        end)
-    end
-end
-
-local function RefreshBlacklistPlayerPicker()
-    if BlacklistPlayerPicker then
-        pcall(function()
-            BlacklistPlayerPicker:Refresh(GetPlayerPickerValues())
         end)
     end
 end
@@ -1392,8 +1362,6 @@ end
 -- Detect joins globally for the current server.
 Track(
     Players.PlayerAdded:Connect(function(player)
-        RefreshBlacklistPlayerPicker()
-
         if IsBlacklisted(player.Name) then
             StartAlert(player)
         end
@@ -1402,7 +1370,6 @@ Track(
 
 Track(
     Players.PlayerRemoving:Connect(function(player)
-        RefreshBlacklistPlayerPicker()
         StopAlert(player.Name)
 
         if SpyTarget == player then
@@ -1432,21 +1399,72 @@ BlacklistTab:Paragraph({
 
 BlacklistTab:Divider()
 
-BlacklistPlayerPicker = BlacklistTab:Dropdown({
-    Title = "Add Player to Blacklist",
-    Desc = "Type part of a username to filter the players in this server, then select one to add it.",
-    Values = GetPlayerPickerValues(),
+local BlacklistInput
+local BlacklistSuggestions
+
+local function GetPlayerSuggestions(query)
+    local values = {}
+    query = string.lower(tostring(query or ""))
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= Player then
+            local name = player.Name
+            if query == "" or string.find(string.lower(name), query, 1, true) then
+                table.insert(values, name)
+            end
+        end
+    end
+
+    table.sort(values, function(a, b)
+        return string.lower(a) < string.lower(b)
+    end)
+
+    if #values == 0 then
+        table.insert(values, "— No matching players —")
+    end
+
+    return values
+end
+
+BlacklistInput = BlacklistTab:Input({
+    Title = "Add Player",
+    Desc = "Type part of a username. The list below filters as you type.",
+    Placeholder = "Start typing a username...",
+    InputIcon = "user-plus",
+    Callback = function(value)
+        if BlacklistSuggestions then
+            pcall(function()
+                BlacklistSuggestions:Refresh(GetPlayerSuggestions(value))
+            end)
+        end
+    end,
+})
+
+BlacklistSuggestions = BlacklistTab:Dropdown({
+    Title = "Matching Players",
+    Desc = "Select a player from the filtered list to add them.",
+    Values = GetPlayerSuggestions(""),
     AllowNone = true,
-    SearchBarEnabled = true,
+    SearchBarEnabled = false,
     Callback = function(value)
         if type(value) == "table" then
             value = value[1]
         end
 
-        if not value or value == "— No other players in server —" then
+        if not value or value == "— No matching players —" then
             return
         end
 
+        AddToBlacklist(value)
+    end,
+})
+
+BlacklistTab:Button({
+    Title = "Add Typed Username",
+    Desc = "Add the exact username currently in the textbox.",
+    Icon = "user-plus",
+    Callback = function()
+        local value = BlacklistInput and BlacklistInput.Value
         AddToBlacklist(value)
     end,
 })
@@ -1565,15 +1583,6 @@ BlacklistTab:Keybind({
     Callback = function(key)
         SpyKeybind = NormalizeKeybind(key)
         SaveBlacklistState()
-
-        WindUI:Notify({
-            Title = "Spy Keybind",
-            Content = SpyKeybind
-                and ("Bound to " .. SpyKeybind.Name .. ". Press it to toggle Spy.")
-                or "Spy keybind cleared.",
-            Icon = "keyboard",
-            Duration = 3,
-        })
     end,
 })
 
@@ -2176,8 +2185,9 @@ Track(
                 return
             end
 
-            -- Compare normalized Enum.KeyCode values. This works whether
-            -- WindUI supplied the bind as an EnumItem or as a string.
+            -- Animation and Spy keybinds are independent.
+            -- The old handler returned here when AnimationKeybind was nil,
+            -- which prevented Spy from ever receiving the keyboard input.
             if KeybindMatches(Input.KeyCode, AnimationKeybind) then
                 ToggleCustomAnimations()
                 return
